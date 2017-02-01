@@ -52,6 +52,7 @@ class CassandraPlugin(SynchroniserPluginBase):
     CASSANDRA_YAML_TEMPLATE = "/usr/share/clearwater/cassandra/cassandra.yaml.template"
     CASSANDRA_YAML_FILE = "/etc/cassandra/cassandra.yaml"
     CASSANDRA_TOPOLOGY_FILE = "/etc/cassandra/cassandra-rackdc.properties"
+    CASSANDRA_ENV_FILE = "/etc/cassandra/cassandra-env.sh"
 
     def __init__(self, params):
         self._ip = params.ip
@@ -167,8 +168,19 @@ class CassandraPlugin(SynchroniserPluginBase):
 
         _log.info("Stopped Cassandra while changing config files")
 
+        ip_replace_conf_line = "JVM_OPTS=\"$JVM_OPTS -Dcassandra.replace_address_first_boot={}\"".format(self._ip)
+        # Check if we've already attempted a destructive restart below. If we didn't complete
+        # we'll probably need to force replace ourselves in the cluster
+        if os.path.exists("/etc/clearwater/destructive_cassandra_clustering_in_progress"):
+            _log.warn("We've been here before. Add the replace address argument to cassandra-env BONANA")
+            open("/etc/clearwater/weve_been_here_before", 'a').close
+            with open(self.CASSANDRA_ENV_FILE, 'a') as f:
+                f.write(ip_replace_conf_line)
+
         if destructive_restart:
             _log.warn("Deleting /var/lib/cassandra - this is normal on initial clustering")
+            _log.warn("Making destructive restart so we can see we've been here BONANA")
+            open("/etc/clearwater/destructive_cassandra_clustering_in_progress", 'a').close()
             run_command("rm -rf /var/lib/cassandra/")
             run_command("mkdir -m 755 /var/lib/cassandra")
             run_command("chown -R cassandra /var/lib/cassandra")
@@ -176,7 +188,22 @@ class CassandraPlugin(SynchroniserPluginBase):
         # Write back to cassandra.yaml - this allows Cassandra to start again.
         safely_write(self.CASSANDRA_TOPOLOGY_FILE, topology)
         safely_write(self.CASSANDRA_YAML_FILE, contents)
+
         self.wait_for_cassandra()
+
+        if os.path.exists("/etc/clearwater/destructive_cassandra_clustering_in_progress"):
+            _log.warn("Clearing destructive restart marker")
+            os.remove("/etc/clearwater/destructive_cassandra_clustering_in_progress")
+
+        if os.path.exists("/etc/clearwater/weve_been_here_before"):
+            with open(self.CASSANDRA_ENV_FILE, 'r') as f:
+                lines = f.readlines()
+            with open(self.CASSANDRA_ENV_FILE, 'w') as f:
+                for line in lines:
+                    if line != ip_replace_conf_line:
+                        f.write(line)
+            _log.warn("Clearing been here before marker")
+            os.remove("/etc/clearwater/weve_been_here_before")
 
         if os.path.exists("/etc/clearwater/force_cassandra_yaml_refresh"):
             os.remove("/etc/clearwater/force_cassandra_yaml_refresh")
